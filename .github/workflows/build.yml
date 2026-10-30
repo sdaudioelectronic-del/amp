@@ -1,0 +1,84 @@
+name: Compilar APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Descomprimir todos los ZIP que subiste sin extraer
+        shell: bash
+        run: |
+          while IFS= read -r z; do
+            d="./proyecto-$(echo "$z" | md5sum | cut -c1-8)"
+            mkdir -p "$d"
+            unzip -o -q "$z" -d "$d" || echo "No se pudo descomprimir $z"
+            echo "Descomprimido: $z"
+          done < <(find . -iname "*.zip" -not -path "./.git/*")
+
+      - name: Localizar el proyecto (la versión más reciente)
+        id: proj
+        shell: bash
+        run: |
+          best=""
+          bestv=-1
+          while IFS= read -r f; do
+            d=$(dirname "$f")
+            if [ -f "$d/app/src/main/java/com/ecualizador/app/EqController.kt" ]; then
+              v=$(grep -oE 'versionCode *= *[0-9]+' "$d/app/build.gradle.kts" | grep -oE '[0-9]+' | head -n1 || true)
+              v=${v:-0}
+              echo "Candidato: $d (versionCode $v)"
+              if [ "$v" -gt "$bestv" ]; then
+                bestv=$v
+                best="$d"
+              fi
+            fi
+          done < <(find . -name settings.gradle.kts -not -path "./.git/*")
+          if [ -z "$best" ]; then
+            echo "No se encontró el proyecto (falta EqController.kt). Archivos del repositorio:"
+            find . -not -path "./.git/*" | head -60
+            exit 1
+          fi
+          echo "Se compilará: $best (versionCode $bestv)"
+          echo "dir=$best" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Compilar APK
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Renombrar APK
+        run: cp "${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk" Ecualizador.apk
+
+      - name: Guardar APK como archivo descargable de la ejecución
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ecualizador-APK
+          path: Ecualizador.apk
+
+      - name: Publicar en Releases (enlace de descarga)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Ecualizador v${{ github.run_number }}
+          body: Descarga el archivo Ecualizador.apk e instálalo en tu teléfono Android.
+          files: Ecualizador.apk
